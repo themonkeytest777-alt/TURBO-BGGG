@@ -1,0 +1,80 @@
+name: Build mod
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rebuild project structure (fichiers a plat -> dossiers)
+        shell: bash
+        run: |
+          set -e
+          # Ancien mixin reseau qui faisait planter le jeu : on s'assure qu'il n'est plus la
+          rm -f ClientPlayNetworkHandlerMixin.java
+          mkdir -p src/main/resources/assets/turbominer/lang
+          # Les .java sont ranges selon leur ligne "package ..."
+          for f in *.java; do
+            if [ -f "$f" ]; then
+              pkg=$(grep -m1 '^package ' "$f" | sed 's/^package \(.*\);.*/\1/' | tr -d '\r' | tr . /)
+              mkdir -p "src/main/java/$pkg"
+              mv "$f" "src/main/java/$pkg/"
+            fi
+          done
+          for f in fabric.mod.json turbominer.mixins.json; do
+            if [ -f "$f" ]; then mv "$f" src/main/resources/; fi
+          done
+          for f in en_us.json fr_fr.json; do
+            if [ -f "$f" ]; then mv "$f" src/main/resources/assets/turbominer/lang/; fi
+          done
+          echo "Sources trouvees :"
+          find src -type f | sort
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Build
+        run: gradle build --no-daemon
+
+      - name: Verify jar is not empty
+        shell: bash
+        run: |
+          JAR=$(ls build/libs/*.jar | grep -v -- '-sources.jar' | head -1)
+          unzip -l "$JAR"
+          unzip -l "$JAR" | grep -q 'com/turbominer/TurboMinerClient.class' || { echo "ERREUR: jar vide, classes absentes"; exit 1; }
+          unzip -l "$JAR" | grep -q 'fabric.mod.json' || { echo "ERREUR: fabric.mod.json absent"; exit 1; }
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: TurboMiner
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+
+      - name: Release (tags v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
